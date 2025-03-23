@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# --- رنگ‌ها ---
+# --- رنگ‌های ترمینال ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -9,75 +9,93 @@ NC='\033[0m'
 
 # --- بررسی دسترسی روت ---
 if [ "$(id -u)" != "0" ]; then
-   echo -e "${RED}این اسکریپت باید با دسترسی روت اجرا شود.${NC}"
+   echo -e "${RED}این اسکریپت باید با دسترسی روت اجرا شود${NC}" 1>&2
    exit 1
 fi
 
-# --- دریافت اطلاعات از کاربر ---
-read -p "دامنه یا آیپی سرور: " WP_URL
-read -p "مسیر نصب وردپرس [/var/www/html]: " WEB_ROOT
-WEB_ROOT=${WEB_ROOT:-/var/www/html}
-read -p "زبان وردپرس (fa/en) [fa]: " WP_LANG
-WP_LANG=${WP_LANG:-fa}
-read -p "نام کاربری ادمین وردپرس [admin]: " WP_ADMIN_USER
-WP_ADMIN_USER=${WP_ADMIN_USER:-admin}
-read -p "ایمیل ادمین وردپرس [admin@$WP_URL]: " WP_ADMIN_EMAIL
-WP_ADMIN_EMAIL=${WP_ADMIN_EMAIL:-admin@$WP_URL}
+# --- دریافت تنظیمات ---
+echo -e "\n${CYAN}### تنظیمات سرور وردپرس ###${NC}"
 
-# --- نمایش نسخه‌های PHP و انتخاب یکی ---
-PHP_VERSIONS=($(apt-cache search php | grep -Po 'php\d+\.\d+(?=-cli)' | sort -V | uniq))
-echo -e "${CYAN}نسخه‌های موجود PHP:${NC}"
-for i in "${!PHP_VERSIONS[@]}"; do echo "$((i+1))) ${PHP_VERSIONS[$i]}"; done
-while true; do
-    read -p "شماره نسخه PHP را انتخاب کنید (1-${#PHP_VERSIONS[@]}): " CHOICE
-    if [[ $CHOICE =~ ^[0-9]+$ ]] && [ $CHOICE -ge 1 ] && [ $CHOICE -le ${#PHP_VERSIONS[@]} ]; then
-        PHP_VER=${PHP_VERSIONS[$((CHOICE-1))]}
-        break
-    else
-        echo -e "${RED}انتخاب نامعتبر!${NC}"
-    fi
-done
+WP_URL=$(read -p "دامنه یا آیپی سرور: " && echo $REPLY)
+WEB_ROOT=$(read -p "مسیر نصب وردپرس: " && echo $REPLY)
+WP_LANG=$(read -p "زبان وردپرس (fa/en): " && echo $REPLY)
 
-# --- نصب پیشنیازها ---
-echo -e "${CYAN}نصب پیشنیازها...${NC}"
-apt update && apt install -y apache2 mariadb-server php libapache2-mod-$PHP_VER $PHP_VER-mysql wget unzip curl certbot python3-certbot-apache
+# --- انتخاب نسخه PHP ---
+echo -e "\n${CYAN}### انتخاب نسخه PHP ###${NC}"
+add-apt-repository -y ppa:ondrej/php >/dev/null 2>&1
+apt update >/dev/null 2>&1
+apt-cache search php | grep -Po 'php\d+\.\d+(?=-cli)' | sort -V | uniq
+read -p "نسخه PHP مورد نظر را وارد کنید (مثال: php8.1): " selected_php
 
-# --- تنظیمات دیتابیس ---
+# --- تنظیمات مدیریتی ---
+WP_ADMIN_USER="admin"
+WP_ADMIN_EMAIL="admin@${WP_URL}"
 DB_NAME="wordpress_$(openssl rand -hex 3)"
 DB_USER="wp_user_$(openssl rand -hex 2)"
-DB_PASS=$(openssl rand -base64 12)
-MYSQL_ROOT_PASS=$(openssl rand -base64 12)
+DB_PASS=$(openssl rand -base64 12 | tr -d '\n')
+WP_ADMIN_PASS=$(openssl rand -base64 12 | tr -d '\n')
+MYSQL_ROOT_PASS=$(openssl rand -base64 12 | tr -d '\n')
 
-mysql -e "CREATE DATABASE $DB_NAME;"
-mysql -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';"
-mysql -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
-mysql -e "FLUSH PRIVILEGES;"
+# --- نصب پیشنیازها ---
+echo -e "\n${CYAN}### نصب پیشنیازها ###${NC}"
+apt update && apt upgrade -y
+apt install -y apache2 ${selected_php} ${selected_php}-mysql ${selected_php}-curl ${selected_php}-gd ${selected_php}-mbstring ${selected_php}-xml ${selected_php}-zip wget unzip curl ghostscript wp-cli
 
-# --- دانلود و نصب وردپرس ---
-wget -q https://wordpress.org/latest.zip -O /tmp/latest.zip
+# --- نصب MariaDB ---
+echo -e "\n${CYAN}### نصب MariaDB ###${NC}"
+apt install -y mariadb-server
+
+# --- تنظیمات MariaDB ---
+echo -e "\n${CYAN}### تنظیمات دیتابیس ###${NC}"
+mysql --user=root --password="${MYSQL_ROOT_PASS}" -e "CREATE DATABASE ${DB_NAME};"
+mysql --user=root --password="${MYSQL_ROOT_PASS}" -e "CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+mysql --user=root --password="${MYSQL_ROOT_PASS}" -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+mysql --user=root --password="${MYSQL_ROOT_PASS}" -e "FLUSH PRIVILEGES;"
+
+# --- نصب وردپرس ---
+echo -e "\n${CYAN}### نصب وردپرس ###${NC}"
+wget https://wordpress.org/latest.zip -O /tmp/latest.zip
 unzip -o /tmp/latest.zip -d /tmp
-mkdir -p "$WEB_ROOT"
-cp -a /tmp/wordpress/. "$WEB_ROOT"
-chown -R www-data:www-data "$WEB_ROOT"
+mkdir -p "${WEB_ROOT}"
+cp -a /tmp/wordpress/* "${WEB_ROOT}/"
 
-# --- تنظیمات وردپرس ---
-wp config create --path="$WEB_ROOT" --dbname="$DB_NAME" --dbuser="$DB_USER" --dbpass="$DB_PASS" --extra-php <<PHP
+# --- پیکربندی وردپرس ---
+sudo -u www-data -- wp core config --path="${WEB_ROOT}" --dbname="${DB_NAME}" --dbuser="${DB_USER}" --dbpass="${DB_PASS}" --extra-php <<PHP
 define('FS_METHOD', 'direct');
 define('WP_AUTO_UPDATE_CORE', true);
 PHP
-wp core install --path="$WEB_ROOT" --url="http://$WP_URL" --title="سایت جدید" --admin_user="$WP_ADMIN_USER" --admin_password="$(openssl rand -base64 12)" --admin_email="$WP_ADMIN_EMAIL"
 
-# --- فعال‌سازی زبان فارسی ---
-if [ "$WP_LANG" = "fa" ]; then
-    wp core language install fa --activate --path="$WEB_ROOT"
-fi
+sudo -u www-data -- wp core install --path="${WEB_ROOT}" --url="http://${WP_URL}" --title="سایت جدید" --admin_user="${WP_ADMIN_USER}" --admin_password="${WP_ADMIN_PASS}" --admin_email="${WP_ADMIN_EMAIL}"
 
-# --- فعال‌سازی HTTPS (در صورت استفاده از دامنه) ---
-if [[ "$WP_URL" != "" && "$WP_URL" != *"."* ]]; then
-    echo -e "${YELLOW}⚠️ دامنه معتبر نیست. از تنظیم SSL صرف‌نظر شد.${NC}"
-else
-    certbot --apache -d "$WP_URL" --non-interactive --agree-tos -m "$WP_ADMIN_EMAIL"
-fi
+# --- تنظیمات امنیتی ---
+echo -e "\n${CYAN}### تنظیمات امنیتی ###${NC}"
+chown -R www-data:www-data "${WEB_ROOT}"
+find "${WEB_ROOT}" -type d -exec chmod 755 {} \;
+find "${WEB_ROOT}" -type f -exec chmod 644 {} \;
+chmod 600 "${WEB_ROOT}/wp-config.php"
+rm -f "${WEB_ROOT}/readme.html" "${WEB_ROOT}/wp-config-sample.php"
+
+# --- ذخیره اطلاعات ---
+cat << EOF > /root/wp-credentials.txt
+ورود به مدیریت: http://${WP_URL}/wp-admin
+نام کاربری ادمین: ${WP_ADMIN_USER}
+رمز عبور ادمین: ${WP_ADMIN_PASS}
+ایمیل ادمین: ${WP_ADMIN_EMAIL}
+زبان سایت: ${WP_LANG}
+نسخه PHP: ${selected_php}
+
+مشخصات دیتابیس:
+نام دیتابیس: ${DB_NAME}
+کاربر دیتابیس: ${DB_USER}
+رمز دیتابیس: ${DB_PASS}
+
+مشخصات ریشه ماریا دی بی:
+نام کاربری: root
+رمز عبور: ${MYSQL_ROOT_PASS}
+EOF
 
 # --- پایان نصب ---
-echo -e "${GREEN}✅ وردپرس با موفقیت نصب شد!${NC}"
+systemctl restart apache2
+
+echo -e "\n${GREEN}نصب با موفقیت انجام شد!${NC}"
+echo -e "${YELLOW}اطلاعات ورود در فایل /root/wp-credentials.txt ذخیره شده است${NC}"
