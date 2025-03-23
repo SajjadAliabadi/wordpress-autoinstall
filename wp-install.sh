@@ -8,6 +8,31 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # --- توابع کمکی ---
+clean_previous_installation() {
+    echo -e "\n${YELLOW}شروع پاکسازی نسخه قبلی...${NC}"
+    
+    # حذف وردپرس و دیتابیس
+    mysql -u root -p${MYSQL_ROOT_PASS} -e "DROP DATABASE IF EXISTS ${DB_NAME};"
+    mysql -u root -p${MYSQL_ROOT_PASS} -e "DROP USER IF EXISTS '${DB_USER}'@'localhost';"
+    
+    # حذف فایل‌ها
+    rm -rf "${WEB_ROOT}"
+    rm -f /etc/apache2/sites-available/wordpress.conf
+    rm -f /etc/apache2/sites-enabled/wordpress.conf
+    
+    # حذف پکیج‌ها
+    apt purge -y apache2* mariadb* php* mysql* 
+    apt autoremove -y
+    apt autoclean -y
+    
+    # حذف مخازن اضافه
+    rm -f /etc/apt/sources.list.d/mariadb.list
+    rm -f /etc/apt/trusted.gpg.d/mariadb-keyring.gpg
+    add-apt-repository --remove ppa:ondrej/php -y
+    
+    echo -e "${GREEN}پاکسازی کامل انجام شد!${NC}"
+}
+
 show_php_versions() {
     echo -e "\n${CYAN}نسخه‌های موجود PHP:${NC}"
     apt-cache search php | grep -Po 'php\d+\.\d+(?=-cli)' | sort -V | uniq | awk '{print NR ") " $0}'
@@ -55,6 +80,13 @@ if [ "$(id -u)" != "0" ]; then
    exit 1
 fi
 
+# --- بررسی نصب قبلی ---
+read -p "آیا می‌خواهید نسخه‌های قبلی را حذف کنید؟ (y/N): " clean_choice
+clean_choice=${clean_choice:-n}
+if [[ $clean_choice =~ [Yy] ]]; then
+    clean_previous_installation
+fi
+
 # --- دریافت تنظیمات ---
 echo -e "\n${CYAN}### تنظیمات سرور وردپرس ###${NC}"
 
@@ -85,11 +117,13 @@ apt install -y \
     apache2 \
     ${selected_php} \
     ${selected_php}-mysql \
+    ${selected_php}-mysqli \
     ${selected_php}-curl \
     ${selected_php}-gd \
     ${selected_php}-mbstring \
     ${selected_php}-xml \
     ${selected_php}-zip \
+    ${selected_php}-dom \
     wget \
     unzip \
     curl \
@@ -135,7 +169,8 @@ if [ "$WP_LANG" = "fa" ]; then
 fi
 
 # --- پیکربندی وردپرس ---
-sudo -u www-data -- wp core config --path="${WEB_ROOT}" --dbname="${DB_NAME}" --dbuser="${DB_USER}" --dbpass="${DB_PASS}" --extra-php <<PHP
+sudo -u www-data -- wp core config --path="${WEB_ROOT}" --dbname="${DB_NAME}" --dbuser="${DB_USER}" --dbpass="${DB_PASS}" --force --extra-php <<PHP
+<?php
 define('FS_METHOD', 'direct');
 define('WP_AUTO_UPDATE_CORE', true);
 PHP
